@@ -1,659 +1,1403 @@
 #Pipeline for SLN, zero imputation, and IRS on TMT data followed by DE analysis using PoissonSeq
 #Last updated: Jan 06, 2023 by CMS
 
-TMT_pseq_pipeline <- function(workdir, datafile, metadatafile, exp, REGEX, SLN, PTM, DE, stat, qval,compsfile, annot){
-
-#make sure the exp name is syntactically valid if not using REGEXP
-if(REGEX == "no") {
-  exp <- make.names(exp)
-}
-TMT_NEAT_DIR <- getwd()
-print(paste0("Working directory: ", workdir))
-setwd(workdir)
-message("Loading data files...")
-
-#load the data file
-#make the peptide ids the row names
-data <- read.delim(datafile,row.names = "id", stringsAsFactors = FALSE)
-
-colnames(data)[1] <- "Proteins"
-
-#read in the metadata
-metadataorg <- read.table(metadatafile,sep="\t",header=TRUE,stringsAsFactors=FALSE)
-
-#remove blanks
-noblanks <- metadataorg[!grepl('blank',metadataorg$name,ignore.case=TRUE),]
-metadata <- noblanks
-plex <- length(metadata$sample[metadata$run==1]) #number of TMT channels used
-runs <- max(metadata$run) #number of LC-MS/MS runs for this experiment
-reps <- metadata$rep #number of replicates per condition
-numrefs <- sum(grepl("Ref",metadata$name,ignore.case=TRUE))/runs
-
-message("Beginning data processing...")
-if (PTM == "P"){
-  #get rid of peptides with no phospho sites
-  data = data[!(data$Number.of.Phospho..STY.==""),]
-  #get the raw intensities for differential abundance
-  intensities = data[,grepl('Reporter.intensity',colnames(data))]
-  rawintensities = intensities[!grepl('corrected',colnames(intensities))]
-  rawintensities = rawintensities[!grepl('count',colnames(rawintensities))]
+TMT_pseq_pipeline <- function(workdir, datafile, searcheng, metadatafile, exp, REGEX, SLN, PTM, DE, stat, qval,compsfile, annot){
   
-  if(exp=="None"){
-    intensitiesK=rawintensities
-  }else{
-    intensitiesK = rawintensities[,grepl(exp,colnames(rawintensities))] 
+  #make sure the exp name is syntactically valid if not using REGEXP
+  if(REGEX == "no") {
+    exp <- make.names(exp)
   }
-  #remove blanks
-  metadata3 = rep(metadataorg$name,each=3)
-  intensitiesK = intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
-
+  TMT_NEAT_DIR <- getwd()
+  print(paste0("Working directory: ", workdir))
+  setwd(workdir)
+  message("Loading data files...")
   
-  message("Separating multiplicities...")
-  #first we need to make a new table where we 1) take only the columns we need and 2) separate peptides by multiplicity
-  #this assumes columns are always named the same thing
-  currentrow=1
-  for (i in 1:length(row.names(data))){
-    myprotein = data[i,]
-    #check number of phospho sites
-    #if there is a semicolon, that means we have multiple sites and need to split into multiple rows
-    if (length(grep(";",myprotein$Number.of.Phospho..STY.))>0){
-      #get the info for this protein
-      mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
-                          myprotein$Localization.prob,myprotein$Number.of.Phospho..STY.,
-                          myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
-                          myprotein$Phospho..STY..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
-      colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
-                         "Localization.prob",
-                         "Phospho.Site","Sequence.window",'Modification.window',
-                         'Peptide.window.coverage','Phospho.site.probs','original.id')
-      #split the phospho sites by semincolon
-      sites = strsplit(myprotein$Number.of.Phospho..STY.,";")
-      mysites = sites[[1]]
-      for (j in 1:length(mysites)){
-        #if the site # is >3, we need to make it 3
-        if (mysites[j]>3){
-          currentsite = 3
-        } else{
-          currentsite=mysites[j]
+  #load the data file
+  if (searcheng == "MaxQuant"){
+    #make the peptide ids the row names
+    data <- read.delim(datafile, stringsAsFactors = FALSE)
+    data$id <- as.character(data$id)
+    colnames(data)[1] <- "Proteins"
+    
+    #read in the metadata
+    metadataorg <- read.table(metadatafile,sep="\t",header=TRUE,stringsAsFactors=FALSE)
+    
+    #remove blanks
+#    noblanks <- metadataorg[!grepl('blank',metadataorg$name,ignore.case=TRUE),]
+    metadata <- metadataorg[!grepl('blank',metadataorg$name,ignore.case=TRUE),]
+    plex <- length(metadata$sample[metadata$run==1]) #number of TMT channels used
+    runs <- max(metadata$run) #number of LC-MS/MS runs for this experiment
+    reps <- metadata$rep #number of replicates per condition
+    numrefs <- sum(grepl("Ref",metadata$name,ignore.case=TRUE))/runs
+    
+    message("Beginning data processing...")
+    if (PTM == "P"){
+      #get rid of peptides with no phospho sites
+      data <- data %>% filter(!is.na(Number.of.Phospho..STY.))
+      data <- data %>% filter(Number.of.Phospho..STY.!="")
+      #get the raw intensities for differential abundance
+      intensities = data[,grepl('Reporter.intensity',colnames(data))]
+      rawintensities = intensities[!grepl('corrected',colnames(intensities))]
+      rawintensities = rawintensities[!grepl('count',colnames(rawintensities))]
+      
+      if(exp=="None"){
+        intensitiesK=rawintensities
+      }else{
+        intensitiesK = rawintensities[,grepl(exp,colnames(rawintensities))] 
+      }
+      #remove blanks
+      metadata3 = rep(metadataorg$name,each=3)
+      intensitiesK = intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
+      
+      
+      message("Separating multiplicities...")
+      #first we need to make a new table where we 1) take only the columns we need and 2) separate peptides by multiplicity
+      #this assumes columns are always named the same thing
+      currentrow=1
+      for (i in 1:length(row.names(data))){
+        myprotein = data[i,]
+        #check number of phospho sites
+        #if there is a semicolon, that means we have multiple sites and need to split into multiple rows
+        if (length(grep(";",myprotein$Number.of.Phospho..STY.))>0){
+          #get the info for this protein
+          mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                              myprotein$Localization.prob,myprotein$Number.of.Phospho..STY.,
+                              myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                              myprotein$Phospho..STY..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                             "Localization.prob",
+                             "Phospho.Site","Sequence.window",'Modification.window',
+                             'Peptide.window.coverage','Phospho.site.probs','original.id')
+          #split the phospho sites by semincolon
+          sites = strsplit(myprotein$Number.of.Phospho..STY.,";")
+          mysites = sites[[1]]
+          for (j in 1:length(mysites)){
+            #if the site # is >3, we need to make it 3
+            if (mysites[j]>3){
+              currentsite = 3
+            } else{
+              currentsite=mysites[j]
+            }
+            myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+            colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+            if (i==1){
+              newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            } else{
+              newdata[currentrow,] =  data.frame(mydata,myintensities)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            }
+          }
+        }else{
+          #get the info for this protein
+          mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                              myprotein$Localization.prob,myprotein$Number.of.Phospho..STY.,
+                              myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                              myprotein$Phospho..STY..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                             "Localization.prob",
+                             "Phospho.Site","Sequence.window",'Modification.window',
+                             'Peptide.window.coverage','Phospho.site.probs','original.id')
+          #get the correct intensity values for this protein
+          if (myprotein$Number.of.Phospho..STY.>3){
+            currentsite = 3
+          } else{
+            currentsite=myprotein$Number.of.Phospho..STY.
+          }
+          myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+          colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+          if (i==1){
+            newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.Phospho..STY.,sep="")
+            currentrow = currentrow+1
+          } else{
+            newdata[currentrow,] =  data.frame(mydata,myintensities)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.Phospho..STY.,sep="")
+            currentrow = currentrow+1
+          }
         }
-        myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
-        colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
-        if (i==1){
-          newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
-          row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
-          currentrow = currentrow+1
-        } else{
-          newdata[currentrow,] =  data.frame(mydata,myintensities)
-          row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
-          currentrow = currentrow+1
+      }
+    } else 
+      if(PTM=="U"){
+      #get rid of peptides with no ubiquitin sites
+      data <- data[!(data$Number.of.GlyGly..K.==""),]
+      #get the raw intensities for differential abundance
+      intensities <- data[,grepl('Reporter.intensity',colnames(data))]
+      rawintensities <- intensities[!grepl('corrected',colnames(intensities))]
+      rawintensities <- rawintensities[!grepl('count',colnames(rawintensities))]
+      
+      if(exp=="None"){
+        intensitiesK <- rawintensities
+      }else{
+        intensitiesK <- rawintensities[,grepl(exp,colnames(rawintensities))] 
+      }
+      #remove blanks
+      metadata3 <- rep(metadataorg$name,each=3)
+      intensitiesK <- intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
+      
+      message("Separating multiplicities...")
+      #first we need to make a new table where we 1) take only the columns we need and 2) separate peptides by multiplicity
+      #this assumes columns are always named the same thing
+      currentrow <- 1
+      for (i in 1:length(row.names(data))){
+        myprotein <- data[i,]
+        #check number of Ubiquitin sites
+        #if there is a semicolon, that means we have multiple sites and need to split into multiple rows
+        if (length(grep(";",myprotein$Number.of.GlyGly..K.))>0){
+          #get the info for this protein
+          mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                              myprotein$Localization.prob,myprotein$Number.of.GlyGly..K.,
+                              myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                              myprotein$GlyGly..K..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                             "Localization.prob",
+                             "GlyGly.Site","Sequence.window",'Modification.window',
+                             'Peptide.window.coverage','GlyGly.site.probs','original.id')
+          #split the Ubiquitin sites by semincolon
+          sites = strsplit(myprotein$Number.of.GlyGly..K.,";")
+          mysites = sites[[1]]
+          for (j in 1:length(mysites)){
+            #if the site # is >3, we need to make it 3
+            if (mysites[j]>3){
+              currentsite = 3
+            } else{
+              currentsite=mysites[j]
+            }
+            myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+            colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+            if (i==1){
+              newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            } else{
+              newdata[currentrow,] =  data.frame(mydata,myintensities)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            }
+          }
+        }else{
+          #get the info for this protein
+          mydata <- data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                               myprotein$Localization.prob,myprotein$Number.of.GlyGly..K.,
+                               myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                               myprotein$GlyGly..K..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata) <- c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                                "Localization.prob",
+                                "GlyGly.Site","Sequence.window",'Modification.window',
+                                'Peptide.window.coverage','GlyGly.site.probs','original.id')
+          #get the correct intensity values for this protein
+          if (myprotein$Number.of.GlyGly..K.>3){
+            currentsite <- 3
+          } else{
+            currentsite <- as.numeric(myprotein$Number.of.GlyGly..K.)
+          }
+          myintensities <- intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+          colnames(myintensities) <- paste(rep("R",length(reps)),reps,sep="_")
+          if (i==1){
+            newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.GlyGly..K.,sep="")
+            currentrow = currentrow+1
+          } else{
+            newdata[currentrow,] =  data.frame(mydata,myintensities)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.GlyGly..K.,sep="")
+            currentrow = currentrow+1
+          }
         }
+      }
+    } else {
+      #get the raw intensities for differential abundance
+      intensitiesK <- data |>
+        select(id,matches("Reporter.intensity"), -matches(".corrected.|.count."))
+      
+      # intensities = data[,grepl('Reporter.intensity',colnames(data))]
+      # rawintensities = intensities[!grepl('corrected',colnames(intensities))]
+      # rawintensities = rawintensities[!grepl('count',colnames(rawintensities))]
+      # intensitiesK = rawintensities[,grepl(exp,colnames(rawintensities))]
+      
+      if(exp=="None"){
+        intensitiesK <- intensitiesK
+      }else{
+        intensitiesK <- intensitiesK |>
+          select(matches(exp),id)
+      #  intensitiesK <- rawintensities[,grepl(exp,colnames(rawintensities))] 
+      }
+      #remove blanks
+      # metadata3 <- metadataorg$name
+      # intensitiesK <- intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
+      intensitiesK <- intensitiesK |>
+        select(metadata$sample, id)
+      
+      #get info for all proteins
+      # mydata = data.frame(data$Proteins,data$Majority.protein.IDs,data$Peptide.counts..all,
+      #                     data$Peptide.counts..unique.,data$Fasta.headers,data$Number.of.proteins,data$Peptides,
+      #                     data$Unique.peptides, data$Sequence.coverage....,data$Unique.sequence.coverage....,
+      #                     data$Sequence.lengths, data$Peptide.IDs, data$Evidence.IDs,
+      #                     row.names(data), stringsAsFactors=FALSE)
+      # colnames(mydata)=c("Proteins","Majority.protein.IDs","Peptide.counts.all","Peptide.counts.unique",
+      #                    "Fasta.headers","Number.of.proteins","Peptides","Unique.peptides",'Sequence.coverage',
+      #                    'Unique.sequence.coverage','Sequence.lengths','Peptide.IDs','Evidence.IDs','original.id')
+      # newdata = data.frame(mydata,intensitiesK)
+      
+      mydata = data |>
+        select(Proteins,Majority.protein.IDs,Peptide.counts..all.,Peptide.counts..unique.,Fasta.headers,Number.of.proteins,Peptides,
+                          Unique.peptides, Sequence.coverage....,Unique.sequence.coverage....,
+                          Sequence.lengths, Peptide.IDs, Evidence.IDs,id) |>
+        `colnames<-`(c("Proteins","Majority.protein.IDs","Peptide.counts.all","Peptide.counts.unique",
+                       "Fasta.headers","Number.of.proteins","Peptides","Unique.peptides",'Sequence.coverage',
+                       'Unique.sequence.coverage','Sequence.lengths','Peptide.IDs','Evidence.IDs','UID'))
+      
+      newdata <- inner_join(mydata, intensitiesK, by = c("UID" = "id"))
+      
+    }
+    
+    #replace column names with sample names from the metadata
+    colnames(newdata)[(dim(mydata)[2]+1):dim(newdata)[2]] <- paste0(metadata$name,"_",metadata$rep)
+    
+    #get rid of all contaminants
+    if (PTM=="P" | PTM=="U"){
+      newdata <-  newdata[!grepl("CON",newdata$Protein,ignore.case=TRUE),]
+      newdata <-  newdata[!grepl("REV",newdata$Protein, ignore.case=TRUE),]
+    }else{
+      newdata <-  newdata[!grepl("CON",newdata$Majority.protein.IDs,ignore.case=TRUE),]
+      newdata <-  newdata[!grepl("REV",newdata$Majority.protein.IDs, ignore.case=TRUE),]
+
+    }
+    
+    # #finally add log2 transformed values because apparently people like those
+    # intensities <- newdata[,(dim(mydata)[2]+1):dim(newdata)[2]]
+    # newdatalog <- data.frame(newdata,log2(intensities+1),stringsAsFactors=FALSE)
+    # colnames(newdatalog) <- c(colnames(newdata),paste("log2(",metadata$name,"_",metadata$rep,")",sep=""))
+    # 
+    
+    #save table
+    write.csv(x = newdata, file = 'prenormalized_data.csv', row.names = FALSE)
+    
+    message("Removing proteins in less than 50% of the runs...")
+    
+    #we need to get rid of proteins that are not expressed in at least half of the runs
+    #to do this we can just pull the reference lanes from all the runs and weed out those with 50% missing (0) intensity value
+    #if there are no references, we need to impute them using the protein mean intensity
+    
+    if (numrefs==0){
+      # refs = rowMeans(intensitiesK)
+      refs <- intensitiesK |>
+        `colnames<-`(c(paste0(metadata$name,"_",metadata$rep), "id")) |>
+        column_to_rownames(var = "id") |>
+        rowMeans()
+    } else {
+      refs = newdata[,grepl('Ref',colnames(newdata),ignore.case=TRUE)]
+    }
+    
+    if (numrefs>1) {
+      for (i in 1:runs) {
+        if (i==1) {
+          refsums = data.frame(rowSums(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+        } else {
+          refsums = data.frame(refsums,rowSums(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+        }
+      }
+      #count how many times the protein is zero in the reference lane
+      zerosums = rowSums(refsums[,]==0)
+      #remove the proteins that are zero in >=50-1% of the runs
+      nozeros = newdata[zerosums <= (floor(dim(refsums)[2]/2-1)),]
+    } else if (numrefs==1) {
+      #remove the proteins that are zero in all samples
+      nozeros <- newdata[rowSums(refs==0)==0,]
+    } else {
+      # nozeros <- newdata[refs!=0,]
+      nozeros <- na.omit(newdata[!is.na(refs)&refs!=0,])
+    }
+    #save
+    write.csv(x = nozeros, file = 'prenormalized_data_in_at_least_half_of_runs.csv', row.names = FALSE)
+    # finalintensities <- nozeros[,(dim(mydata)[2]+1):dim(newdata)[2]]
+    finalintensities <- nozeros|>
+      `rownames<-`(NULL) |>
+      select(c(dim(mydata)[2]+1):dim(newdata)[2],UID)|>
+      column_to_rownames(var = "UID")
+    
+    #plot boxplot before normalization
+    #QC plots
+    if (runs==1){
+      colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+      png(filename='boxplot_log2_prenorm.png',width=5000,height=2000,res=300)
+      invisible(b <- boxplot(log2(finalintensities+1),col=colors[unlist(lapply(1:length(unique(metadata$name)),function(x) rep(x,length(unique(reps)))))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+      print(b)
+      dev.off()
+    } else {
+      colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+      png(filename='boxplot_log2_prenorm.png',width=5000,height=2000,res=300)
+      invisible(b <- boxplot(log2(finalintensities+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+      print(b)
+      dev.off()
+    }
+    # colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+    # png(filename='boxplot_log2.png',width=5000,height=2000,res=300)
+    # invisible(b <- boxplot(log2(finalintensities+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+    # print(b)
+    # dev.off()
+    
+    if(SLN=="Yes"){
+      message("Sample loading normalization...")
+      #peform sample loading normalization (SLN)
+      if (runs>1){
+        for (i in 1:runs){
+          #get intensity values for this run
+          myints = finalintensities[,(1+(i-1)*plex):(i*plex)]
+          #column normalize
+          sums = colSums(myints)
+          meansums = mean(sums)
+          normfactor = sums/meansums
+          myintensitiesnorm = myints
+          for (j in 1:dim(myints)[2]){
+            myintensitiesnorm[,j] = ceiling(myints[,j]/normfactor[j])
+          }
+          #make a table of normalized intensities
+          if (i==1){
+            normintensities = myintensitiesnorm
+          }else{
+            normintensities = data.frame(normintensities,myintensitiesnorm)
+          }
+        }
+        write.csv(normintensities,"sample_loading_normalization.csv")
+      }else{
+        # myints <- finalintensities
+        #column normalize
+        sums <- colSums(finalintensities)
+        meansums <- mean(sums)
+        normfactor <- sums/meansums
+        myintensitiesnorm <- finalintensities
+        for (j in 1:dim(finalintensities)[2]){
+          myintensitiesnorm[,j] <-  ceiling(finalintensities[,j]/normfactor[j])
+        }
+        # normintensities <- myintensitiesnorm
+        myintensitiesnorm %>%
+          rownames_to_column(var = "UID") %>%
+          write.csv(file = "sample_loading_normalization.csv", row.names = FALSE)
       }
     }else{
-      #get the info for this protein
-      mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
-                          myprotein$Localization.prob,myprotein$Number.of.Phospho..STY.,
-                          myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
-                          myprotein$Phospho..STY..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
-      colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
-                         "Localization.prob",
-                         "Phospho.Site","Sequence.window",'Modification.window',
-                         'Peptide.window.coverage','Phospho.site.probs','original.id')
-      #get the correct intensity values for this protein
-      if (myprotein$Number.of.Phospho..STY.>3){
-        currentsite = 3
-      } else{
-        currentsite=myprotein$Number.of.Phospho..STY.
-      }
-      myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
-      colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
-      if (i==1){
-        newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
-        row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.Phospho..STY.,sep="")
-        currentrow = currentrow+1
-      } else{
-        newdata[currentrow,] =  data.frame(mydata,myintensities)
-        row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.Phospho..STY.,sep="")
-        currentrow = currentrow+1
-      }
+      myintensitiesnorm <- finalintensities
     }
-  }
-}else if(PTM=="U"){
-  #get rid of peptides with no ubiquitin sites
-  data <- data[!(data$Number.of.GlyGly..K.==""),]
-  #get the raw intensities for differential abundance
-  intensities <- data[,grepl('Reporter.intensity',colnames(data))]
-  rawintensities <- intensities[!grepl('corrected',colnames(intensities))]
-  rawintensities <- rawintensities[!grepl('count',colnames(rawintensities))]
-  
-  if(exp=="None"){
-    intensitiesK <- rawintensities
-  }else{
-    intensitiesK <- rawintensities[,grepl(exp,colnames(rawintensities))] 
-  }
-  #remove blanks
-  metadata3 <- rep(metadataorg$name,each=3)
-  intensitiesK <- intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
-  
-  message("Separating multiplicities...")
-  #first we need to make a new table where we 1) take only the columns we need and 2) separate peptides by multiplicity
-  #this assumes columns are always named the same thing
-  currentrow <- 1
-  for (i in 1:length(row.names(data))){
-    myprotein <- data[i,]
-    #check number of Ubiquitin sites
-    #if there is a semicolon, that means we have multiple sites and need to split into multiple rows
-    if (length(grep(";",myprotein$Number.of.GlyGly..K.))>0){
-      #get the info for this protein
-      mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
-                          myprotein$Localization.prob,myprotein$Number.of.GlyGly..K.,
-                          myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
-                          myprotein$GlyGly..K..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
-      colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
-                         "Localization.prob",
-                         "GlyGly.Site","Sequence.window",'Modification.window',
-                         'Peptide.window.coverage','GlyGly.site.probs','original.id')
-      #split the Ubiquitin sites by semincolon
-      sites = strsplit(myprotein$Number.of.GlyGly..K.,";")
-      mysites = sites[[1]]
-      for (j in 1:length(mysites)){
-        #if the site # is >3, we need to make it 3
-        if (mysites[j]>3){
-          currentsite = 3
-        } else{
-          currentsite=mysites[j]
+    
+    normintensitiesimpall <- myintensitiesnorm
+    
+    #perform IRS
+    if (runs>1){
+      message("Internal reference normalization...")
+      refs = as.matrix(normintensitiesimpall[,grepl('Ref',colnames(normintensitiesimpall),ignore.case=TRUE)])
+      if (numrefs>1){
+        for (i in 1:runs){
+          if (i==1){
+            refscomb = data.frame(rowMeans(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+          }else{
+            refscomb = data.frame(refscomb,rowMeans(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+          }
         }
-        myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
-        colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+      }else{
+        refscomb=refs
+      }
+      refslog = log(refscomb+1)
+      zerosums = rowSums(refscomb[,]==0)
+      irsaverage <- rowSums(refslog)/(dim(refscomb)[2]-zerosums)
+      irsaverage = exp(irsaverage)
+      normfactorref = irsaverage/refscomb
+      for (i in 1:dim(normfactorref)[2]){
+        normfactorref[normfactorref[,i]=="Inf",i]=NA
+      }
+      for (i in 1:dim(refscomb)[2]){
+        #get intensity values for this run
+        myintensities = normintensitiesimpall[,colnames(normintensitiesimpall)%in%paste(metadata$name[metadata$run==i],"_",metadata$rep[metadata$run==i],sep="")]
+        mynormfactorref = normfactorref[,i]
+        #row normalize each protein against the reference
+        for (j in 1:dim(myintensities)[2]){
+          myintensities[,j] = ceiling(myintensities[,j]*mynormfactorref)
+        }
+        #make a table of normalized intensities
         if (i==1){
-          newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
-          row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
-          currentrow = currentrow+1
-        } else{
-          newdata[currentrow,] =  data.frame(mydata,myintensities)
-          row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
-          currentrow = currentrow+1
+          normintensitiesIRS = myintensities
+        }else{
+          normintensitiesIRS = data.frame(normintensitiesIRS,myintensities)
         }
       }
+      write.csv(normintensitiesIRS,'IRS_normalized_values.csv')
+      finalimpintensitiesIRS=normintensitiesIRS
+      
+      metadata %>%
+        filter(!grepl(pattern = "Ref", x = .[]$name), .preserve = TRUE) -> metadata
     }else{
-      #get the info for this protein
-      mydata <- data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
-                          myprotein$Localization.prob,myprotein$Number.of.GlyGly..K.,
-                          myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
-                          myprotein$GlyGly..K..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
-      colnames(mydata) <- c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
-                         "Localization.prob",
-                         "GlyGly.Site","Sequence.window",'Modification.window',
-                         'Peptide.window.coverage','GlyGly.site.probs','original.id')
-      #get the correct intensity values for this protein
-      if (myprotein$Number.of.GlyGly..K.>3){
-        currentsite <- 3
-      } else{
-        currentsite <- as.numeric(myprotein$Number.of.GlyGly..K.)
-      }
-      myintensities <- intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
-      colnames(myintensities) <- paste(rep("R",length(reps)),reps,sep="_")
-      if (i==1){
-        newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
-        row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.GlyGly..K.,sep="")
-        currentrow = currentrow+1
-      } else{
-        newdata[currentrow,] =  data.frame(mydata,myintensities)
-        row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.GlyGly..K.,sep="")
-        currentrow = currentrow+1
-      }
+      finalimpintensitiesIRS <- normintensitiesimpall
     }
-  }
-}else{
-  #get the raw intensities for differential abundance
-  intensities = data[,grepl('Reporter.intensity',colnames(data))]
-  rawintensities = intensities[!grepl('corrected',colnames(intensities))]
-  rawintensities = rawintensities[!grepl('count',colnames(rawintensities))]
-  intensitiesK = rawintensities[,grepl(exp,colnames(rawintensities))]
-  if(exp=="None"){
-    intensitiesK=rawintensities
-  }else{
-    intensitiesK = rawintensities[,grepl(exp,colnames(rawintensities))] 
-  }
-  #remove blanks
-  metadata3 = metadataorg$name
-  intensitiesK = intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
-
-  #get info for all proteins
-  mydata = data.frame(data$Proteins,data$Majority.protein.IDs,data$Peptide.counts..all,
-                      data$Peptide.counts..unique.,data$Fasta.headers,data$Number.of.proteins,data$Peptides,
-                      data$Unique.peptides, data$Sequence.coverage....,data$Unique.sequence.coverage....,
-                      data$Sequence.lengths, data$Peptide.IDs, data$Evidence.IDs,
-                      row.names(data), stringsAsFactors=FALSE)
-  colnames(mydata)=c("Proteins","Majority.protein.IDs","Peptide.counts.all","Peptide.counts.unique",
-                     "Fasta.headers",
-                     "Number.of.proteins","Peptides","Unique.peptides",'Sequence.coverage',
-                     'Unique.sequence.coverage','Sequence.lengths','Peptide.IDs','Evidence.IDs','original.id')
-  newdata = data.frame(mydata,intensitiesK)
-}
-
-#replace column names with sample names from the metadata
-colnames(newdata)[(dim(mydata)[2]+1):dim(newdata)[2]] <- paste0(metadata$name,"_",metadata$rep)
-
-#get rid of all contaminants
-if (PTM=="P" | PTM=="U"){
-  newdata <-  newdata[!grepl("CON",newdata$Protein,ignore.case=TRUE),]
-  newdata <-  newdata[!grepl("REV",newdata$Protein, ignore.case=TRUE),]
-}else{
-  newdata <-  newdata[!grepl("CON",newdata$Majority.protein.IDs,ignore.case=TRUE),]
-  newdata <-  newdata[!grepl("REV",newdata$Majority.protein.IDs, ignore.case=TRUE),]
-}
-
-#finally add log2 transformed values because apparently people like those
-intensities <- newdata[,(dim(mydata)[2]+1):dim(newdata)[2]]
-newdatalog <- data.frame(newdata,log2(intensities+1),stringsAsFactors=FALSE)
-colnames(newdatalog) <- c(colnames(newdata),paste("log2(",metadata$name,"_",metadata$rep,")",sep=""))
-
-#save table
-newdatalog |>
-  rownames_to_column(var = "UID") |>
-  write.csv(file = 'prenormalized_data.csv', row.names = FALSE)
-
-message("Removing proteins in less than 50% of the runs...")
-
-#we need to get rid of proteins that are not expressed in at least half of the runs
-#to do this we can just pull the reference lanes from all the runs and weed out those with 50% missing (0) intensity value
-#if there are no references, we need to impute them using the protein mean intensity
-
-if (numrefs==0){
-  refs = rowMeans(intensities)
-  } else {
-  refs = newdata[,grepl('Ref',colnames(newdata),ignore.case=TRUE)]
-  }
-
-if (numrefs>1) {
-  for (i in 1:runs) {
-    if (i==1) {
-      refsums = data.frame(rowSums(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+    
+    #QC plots
+    # Normalized intensity box plot
+    if (SLN == "Yes") {
+      if (runs == 1) {
+        colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+        png(filename='boxplot_log2_norm.png',width=5000,height=2000,res=300)
+        invisible(b <- boxplot(log2(finalimpintensitiesIRS+1),col=colors[unlist(lapply(1:length(unique(metadata$name)),function(x) rep(x,length(unique(reps)))))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+        print(b)
+        dev.off()
       } else {
-      refsums = data.frame(refsums,rowSums(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+        colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+        png(filename='boxplot_log2_norm.png',width=5000,height=2000,res=300)
+        invisible(b <- boxplot(log2(finalimpintensitiesIRS+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+        print(b)
+        dev.off()
       }
     }
-  #count how many times the protein is zero in the reference lane
-  zerosums = rowSums(refsums[,]==0)
-  #remove the proteins that are zero in >=50-1% of the runs
-  nozeros = newdata[zerosums <= (floor(dim(refsums)[2]/2-1)),]
-  } else if (numrefs==1) {
-  #remove the proteins that are zero in all samples
-  nozeros <- newdata[rowSums(refs==0)==0,]
-  } else {
-  nozeros <- newdata[refs!=0,]
-  }
-#save
-nozeros %>%
-  rownames_to_column(var = "UID") %>%
-  write.csv(file = 'prenormalized_data_in_at_least_half_of_runs.csv', row.names = FALSE)
-finalintensities = nozeros[,(dim(mydata)[2]+1):dim(newdata)[2]]
-
-#plot boxplot before normalization
-#QC plots
-colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
-png(filename='boxplot_log2.png',width=5000,height=2000,res=300)
-invisible(b <- boxplot(log2(finalintensities+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
-print(b)
-dev.off()
-
-if(SLN=="Yes"){
-  message("Sample loading normalization...")
-  #peform sample loading normalization (SLN)
-  if (runs>1){
-    for (i in 1:runs){
-      #get intensity values for this run
-      myints = finalintensities[,(1+(i-1)*plex):(i*plex)]
-      #column normalize
-      sums = colSums(myints)
-      meansums = mean(sums)
-      normfactor = sums/meansums
-      myintensitiesnorm = myints
-      for (j in 1:dim(myints)[2]){
-        myintensitiesnorm[,j] = ceiling(myints[,j]/normfactor[j])
+    
+    #pca
+    if (numrefs>0){
+      pcaresults = prcomp(t(na.omit(finalimpintensitiesIRS[,!grepl("Ref",colnames(finalimpintensitiesIRS),ignore.case=TRUE)])))
+      #plot PCA
+      g <- ggbiplot(pcaresults, groups = metadata$name[!grepl("Ref",metadata$name,ignore.case=TRUE)],
+                    labels=colnames(finalimpintensitiesIRS)[grep("Ref",colnames(finalimpintensitiesIRS),invert=TRUE,ignore.case=TRUE)],
+                    var.axes=FALSE,labels.size=3,ellipse=TRUE)
+      if (length(unique(metadata$name))>2){
+        g <- g+scale_color_brewer(palette="Set1")
       }
-      #make a table of normalized intensities
-      if (i==1){
-        normintensities = myintensitiesnorm
+      g<- g+ theme(text = element_text(size=14))
+      png(filename='PCA.png',width=5000,height=2000,res=300)
+      print(g)
+      dev.off()
+    }else{
+      pcaresults = prcomp(t(finalimpintensitiesIRS))
+      #plot PCA
+      g <- ggbiplot(pcaresults, groups = metadata$name,
+                    labels=colnames(finalimpintensitiesIRS),
+                    var.axes=FALSE,labels.size=3,ellipse=TRUE)
+      # if (length(unique(metadata$name))>2){
+      #    g <- g+scale_color_brewer(palette="Paired")
+      #  }
+      g<- g+ theme(text = element_text(size=14))
+      png(filename='PCA.png',width=4000,height=2000,res=300)
+      print(g)
+      dev.off()
+    }
+    
+    if(DE=="Yes"){
+      if (length(compsfile)==0) {
+        print("Comparing everything versus everything (comps.xlsx file not provided)")
+        #make list of all pairwise comparisons
+        mysamples = unique(metadata$name)
+        comps = data.frame()
+        currentrow = 1
+        for (i in 1:(length(mysamples)-1)){
+          for (j in (i+1):length(mysamples)){
+            comps[currentrow,1] <- mysamples[i]
+            comps[currentrow,2] <- mysamples[j]
+            #         comps[j,1] = paste0(mysamples[i],"_vs_",mysamples[j])
+            currentrow = currentrow+1
+          }
+        }
+      } else {
+        print("Comparing sample pairs depicted in 'comps.xlsx' file")
+        #read in list of comparisons
+        comps <- read.xlsx(compsfile)
+      }
+      
+      #perform Differential expression
+      message("Differential expression analysis...")
+      pseqdata <- finalimpintensitiesIRS
+      newwb <- createWorkbook()
+      newwb2 <- createWorkbook()
+      for (i in 1:dim(comps)[1]){
+        #get the intensities for this comparison
+        pseqdata |>
+          select(matches(comps[i,1]),matches(comps[i,2])) |>
+          na.omit() -> pdata
+        
+        # #Perform two-sample t-test
+        # library(rstatix)
+        # pdata <- pdata %>%
+        #   rownames_to_column(var = "UID") %>%
+        #   pivot_longer()
+        #   stat_ttest <- mySCres_long %>%
+        #   group_by(AGI) %>%
+        #   t_test(log2int ~ cell_type,var.equal = FALSE) %>%
+        #   adjust_pvalue(method = "BH") %>%
+        #   add_significance(cutpoints = c(0,0.05,0.1,1), symbols = c("**","*","ns")) %>%
+        #   inner_join(mySCres_wide, by = "AGI") %>%
+        #   rename(Protein = AGI) %>%
+        #   mutate(AGI = str_sub(Protein,start = 1, end = 9),
+        #          cortex_AVG = rowMeans(across(starts_with("cortex"))),
+        #          endo_AVG = rowMeans(across(starts_with("endo"))),
+        #          log2FC = c(cortex_AVG-endo_AVG)) %>%
+        #   left_join(AthGeneSymbols%>%select(AGI,symbol,FASTA.header), by = "AGI") %>%
+        #   select(1,AGI,symbol,FASTA.header,3:6,9:11,log2FC,matches("AVG"))
+        # write.table(x = stat_ttest,
+        #             file = paste0("SCP",
+        #                           j,
+        #                           "_MeanSCRbelow0.42_rem0.98missing_results_ttest_BH_welch.tsv"),
+        #             row.names = FALSE,
+        #             sep = "\t",
+        #             quote = FALSE)
+        
+        #Perform PoissonSeq statistical analysis
+        #make indicator variable y
+        y <- c(rep(1,ncol(pdata|>select(matches(comps[i,1])))),
+               rep(2,ncol(pdata|>select(matches(comps[i,2])))))
+        
+        #perform PSeq
+        pseq<-PS.Main(dat=list(n=pdata,y=y,type="twoclass",pair=FALSE,gname=row.names(pdata)),para=list(ct.sum=0,ct.mean=0))
+        
+        # Let's create results table. Here, fold-change is calculated from previously normalized intensities.
+        if (annot == "None") {
+          pseq |>
+            select(2,4,5) |>
+            dplyr::rename(UID = gname) |>
+            inner_join(mydata, by = "UID") |>
+            inner_join(pdata |>
+                         rownames_to_column(var = "UID"), by = "UID") %>%
+            dplyr::mutate(log2FC = log2(rowMeans(across(starts_with(comps[i,2])))/rowMeans(across(starts_with(comps[i,1])))),
+                   GeneID = gsub(pattern = ";(.+)", replacement = "", x = .[]$Proteins, perl = T), .after = UID) -> myresults
+          
+        } else if (annot == "Arabidopsis thaliana - TAIR") {
+          
+          pseq |>
+            select(2,4,5) |>
+            rename(UID = gname) |>
+            inner_join(nozeros |>
+                         select(Proteins:original.id) |>
+                         rownames_to_column(var="UID"), by = "UID") |>
+            inner_join(pdata |>
+                         mutate(UID = rownames(pdata)), by = "UID") %>%
+            mutate(log2FC = log2(rowMeans(across(starts_with(comps[i,2])))/rowMeans(across(starts_with(comps[i,1])))),
+                   GeneID = substr(.[]$Proteins,start = 1, stop = 9), .after = UID) |>
+            left_join(y = read.delim(file = paste0(TMT_NEAT_DIR,"/gene_annotations/ath.csv"),header = TRUE,sep = ",",stringsAsFactors = FALSE),
+                      by = c("GeneID" = "AGI")) %>%
+            select(1,2,3,26,27, 4:25) -> myresults
+        }
+        
+        
+        #save
+        mycomp = paste0(comps[i,2],"_vs_",comps[i,1])
+        if (nchar(mycomp)>31){
+          mysheet = paste0(abbreviate(comps[i,2],minlength=13),"_vs_",abbreviate(comps[i,1],minlength=13))
+        }else{
+          mysheet=paste0(comps[i,2],"_vs_",comps[i,1])
+        }
+        addWorksheet(wb = newwb2, sheetName = mysheet, gridLines = TRUE)
+        writeDataTable(wb=newwb2, sheet=mysheet,x=myresults,tableStyle="none",
+                       rowNames=FALSE,withFilter=FALSE,
+                       bandedRows=FALSE,bandedCols=FALSE)
+        
+        #table formatting for MA and volcano plots
+        myresults %>%
+          mutate(mean_mock = rowMeans(select(myresults,starts_with(comps[i,1]))),
+                 mean_treatment = rowMeans(select(myresults, starts_with(comps[i,2])))) -> myData
+        
+        # Let's now make pretty plots!
+        if (stat=="q"){ # if we are using qvalue as cutoff stat
+          
+          myData$DE <- "NS"
+          myData$DE[signif(myData$fdr,1)<=qval & myData$log2FC < 0] <- "Down"
+          myData$DE[signif(myData$fdr,1)<=qval & myData$log2FC > 0] <- "Up"
+          myData$DE <- factor(myData$DE, levels = c("Up", "Down", "NS"))
+          
+          #make MA plot
+          MA <- ggplot(myData,
+                       aes(x = log2(mean_mock*mean_treatment)*0.5,
+                           y = log2FC))+
+            geom_point(color=alpha('black', 0.3), shape=21, size=2, aes(fill=factor(DE))) +
+            scale_fill_manual(values=alpha(c('#FD6467','#56B4E9','#FDFD96'),0.8)) +
+            geom_hline(yintercept = 0, linetype = "dashed", color = alpha("black", 0.7), linewidth = 1)+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(signif(pseq$fdr,1)<qval)," DE elements)"))+
+            xlab(label = bquote("A (Average"~log[2]~"Intensity)"))+
+            ylab(label = bquote("M ("*log[2]~"Fold-change)"))+
+            labs(fill = element_blank())+
+            theme_classic()+
+            theme(axis.title.x = element_text(size =20),
+                  axis.title.y = element_text(size =20),
+                  legend.text = element_text(size=15),
+                  axis.text.x= element_text(size=15),
+                  axis.text.y= element_text(size=15))
+          
+          # Make volcano plot
+          volcanoPlot <- ggplot(myData, aes(x = log2FC, y = -log10(fdr)))+
+            geom_point(color='black', shape=21, size=2, alpha=0.7, aes(fill=factor(DE))) +
+            geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1, alpha = 0.7)+
+            scale_fill_manual(values=c('#FD6467','#56B4E9','#FDFD96' ))+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(signif(pseq$fdr,1)<qval)," DE elements)"))+
+            xlab(label = bquote(log[2]~"Fold-change"))+
+            ylab(label = bquote(-log[10]~"qvalue"))+
+            labs(fill = element_blank())+
+            ylim(0,3)+
+            xlim(-3,3)+
+            theme_classic()+
+            theme(legend.position = "top")
+          
+          #export plots as PNG images
+          png(filename = paste0(comps[i,2],"_vs_",comps[i,1],"_MA_plot_",stat,qval,".png"), width = 2500, height = 1500, res = 300)
+          plot(MA)
+          dev.off()
+          
+          png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_volcano_plot_",stat,qval,".png"),width=2500,height=2000,res=300)
+          print(volcanoPlot)
+          dev.off()
+          
+        } else { # else use pvalue as cutoff stat
+          
+          myData$DE <- "NS"
+          myData$DE[myData$pval<=qval & myData$log2FC < 0] <- "Down"
+          myData$DE[myData$pval<=qval & myData$log2FC > 0] <- "Up"
+          myData$DE <- factor(myData$DE, levels = c("Up", "Down", "NS"))
+          
+          #make MA plot
+          MA <- ggplot(myData,
+                       aes(x = log2(mean_mock*mean_treatment)*0.5,
+                           y = log2FC))+
+            geom_point(color=alpha('black', 0.3), shape=21, size=2, aes(fill=factor(DE))) +
+            scale_fill_manual(values=alpha(c('#FD6467','#56B4E9','#FDFD96'),0.8)) +
+            geom_hline(yintercept = 0, linetype = "dashed", color = alpha("black", 0.7), linewidth = 1)+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$pval<qval)," DE elements)"))+
+            xlab(label = bquote("A (Average"~log[2]~"Intensity)"))+
+            ylab(label = bquote("M ("*log[2]~"Fold-change)"))+
+            labs(fill = element_blank())+
+            theme_classic()+
+            theme(axis.title.x = element_text(size =20),
+                  axis.title.y = element_text(size =20),
+                  legend.text = element_text(size=15),
+                  axis.text.x= element_text(size=15),
+                  axis.text.y= element_text(size=15))
+          
+          #make volcano plot
+          volcanoPlot <- ggplot(myData, aes(x = log2FC, y = -log10(pval)))+
+            geom_point(color='black', shape=21, size=2, alpha=0.7, aes(fill=factor(DE))) +
+            geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1, alpha = 0.7)+
+            scale_fill_manual(values=c('#FD6467','#56B4E9','#FDFD96' ))+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$pval<qval)," DE elements)"))+
+            xlab(label = bquote(log[2]~"Fold-change"))+
+            ylab(label = bquote(-log[10]~"pvalue"))+
+            labs(fill = element_blank())+
+            ylim(0,3)+
+            xlim(-3,3)+
+            theme_classic()+
+            theme(legend.position = "top")
+          
+          #Export both plots as PNG images
+          png(filename = paste0(comps[i,2],"_vs_",comps[i,1],"_MA_plot_",stat,qval,".png"), width = 2500, height = 1500, res = 300)
+          plot(MA)
+          dev.off()
+          
+          png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_volcano_plot_",stat,qval,".png"),width=2500,height=2000,res=300)
+          plot(volcanoPlot)
+          dev.off()
+        }
+        
+        #make pvalue and qvalue histogram
+        
+        png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_qval_hist.png"),width=2000,height=2000,res=300)
+        h <- hist(x=pseq$fdr,breaks=100)
+        plot(h,main="q-value distribution histogram", xlab="q-value")
+        dev.off()
+        
+        png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_pval_hist.png"),width=2000,height=2000,res=300)
+        h <- hist(x=pseq$pval,breaks=100)
+        plot(h,main="p-value distribution histogram",xlab="p-value")
+        dev.off()
+        
+        #get differentially expressed genes and save
+        if (stat=="q"){
+          myresults %>%
+            filter(signif(fdr,1)<qval, .preserve = TRUE) -> mypros
+        }else{
+          myresults %>%
+            filter(signif(pval,1)<qval, .preserve = TRUE) -> mypros
+        }
+        
+        #save
+        addWorksheet(wb = newwb, sheetName = mysheet, gridLines = TRUE)
+        writeDataTable(wb=newwb, sheet=mysheet,x=mypros,tableStyle="none",
+                       rowNames=FALSE,withFilter=FALSE,
+                       bandedRows=FALSE,bandedCols=FALSE)
+      }
+      
+      #write workbook
+      if (stat=="q"){
+        saveWorkbook(newwb, paste("Pseq_all_comps_q",qval,".xlsx",sep=""),overwrite=TRUE)
       }else{
-        normintensities = data.frame(normintensities,myintensitiesnorm)
+        saveWorkbook(newwb, paste("Pseq_all_comps_p",qval,".xlsx",sep=""),overwrite=TRUE)
       }
-    }
-    write.csv(normintensities,"sample_loading_normalization.csv")
-  }else{
-    myints <- finalintensities
-    #column normalize
-    sums <- colSums(myints)
-    meansums <- mean(sums)
-    normfactor <- sums/meansums
-    myintensitiesnorm <- myints
-    for (j in 1:dim(myints)[2]){
-      myintensitiesnorm[,j] <-  ceiling(myints[,j]/normfactor[j])
-    }
-    normintensities <- myintensitiesnorm
-    myintensitiesnorm %>%
-      rownames_to_column(var = "UID") %>%
-      write.csv(file = "sample_loading_normalization.csv", row.names = FALSE)
-  }
-}else{
-  normintensities <- finalintensities
-}
-
-normintensitiesimpall <- normintensities
-
-#perform IRS
-if (runs>1){
-  message("Internal reference normalization...")
-  refs = as.matrix(normintensitiesimpall[,grepl('Ref',colnames(normintensitiesimpall),ignore.case=TRUE)])
-  if (numrefs>1){
-    for (i in 1:runs){
-      if (i==1){
-        refscomb = data.frame(rowMeans(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
-      }else{
-        refscomb = data.frame(refscomb,rowMeans(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
-      }
-    }
-  }else{
-    refscomb=refs
-  }
-  refslog = log(refscomb+1)
-  zerosums = rowSums(refscomb[,]==0)
-  irsaverage <- rowSums(refslog)/(dim(refscomb)[2]-zerosums)
-  irsaverage = exp(irsaverage)
-  normfactorref = irsaverage/refscomb
-  for (i in 1:dim(normfactorref)[2]){
-    normfactorref[normfactorref[,i]=="Inf",i]=NA
-  }
-  for (i in 1:dim(refscomb)[2]){
-    #get intensity values for this run
-    myintensities = normintensitiesimpall[,colnames(normintensitiesimpall)%in%paste(metadata$name[metadata$run==i],"_",metadata$rep[metadata$run==i],sep="")]
-    mynormfactorref = normfactorref[,i]
-    #row normalize each protein against the reference
-    for (j in 1:dim(myintensities)[2]){
-      myintensities[,j] = ceiling(myintensities[,j]*mynormfactorref)
-    }
-    #make a table of normalized intensities
-    if (i==1){
-      normintensitiesIRS = myintensities
+      saveWorkbook(newwb2, "Pseq_all_comps.xlsx",overwrite=TRUE)
     }else{
-      normintensitiesIRS = data.frame(normintensitiesIRS,myintensities)
+      #save expression values with annotation information
+      finalimpintensitiesIRS = finalimpintensitiesIRS[order(row.names(finalimpintensitiesIRS)),]
+      nozeros = nozeros[order(row.names(nozeros)),]
+      myresults = data.frame(nozeros[row.names(nozeros)%in%row.names(finalimpintensitiesIRS),1:dim(mydata)[2]],finalimpintensitiesIRS)
+      write.csv(myresults,'Normalized_values.csv')
     }
-  }
-  write.csv(normintensitiesIRS,'IRS_normalized_values.csv')
-  finalimpintensitiesIRS=normintensitiesIRS
-  
-  metadata %>%
-    filter(!grepl(pattern = "Ref", x = .[]$name), .preserve = TRUE) -> metadata
-}else{
-  finalimpintensitiesIRS <- normintensitiesimpall
-}
-
-#QC plots
-# Normalized intensity box plot
-if (SLN == "Yes") {
-  colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
-  png(filename='boxplot_log2_norm.png',width=5000,height=2000,res=300)
-  invisible(b <- boxplot(log2(finalimpintensitiesIRS+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
-  print(b)
-  dev.off()
-}
-
-#pca
-if (numrefs>0){
-  pcaresults = prcomp(t(na.omit(finalimpintensitiesIRS[,!grepl("Ref",colnames(finalimpintensitiesIRS),ignore.case=TRUE)])))
-  #plot PCA
-  g <- ggbiplot(pcaresults, groups = metadata$name[!grepl("Ref",metadata$name,ignore.case=TRUE)],
-                labels=colnames(finalimpintensitiesIRS)[grep("Ref",colnames(finalimpintensitiesIRS),invert=TRUE,ignore.case=TRUE)],
-                var.axes=FALSE,labels.size=3,ellipse=TRUE)
-  if (length(unique(metadata$name))>2){
-    g <- g+scale_color_brewer(palette="Set1")
-  }
-  g<- g+ theme(text = element_text(size=14))
-  png(filename='PCA.png',width=5000,height=2000,res=300)
-  print(g)
-  dev.off()
-}else{
-  pcaresults = prcomp(t(finalimpintensitiesIRS))
-  #plot PCA
-  g <- ggbiplot(pcaresults, groups = metadata$name,
-                labels=colnames(finalimpintensitiesIRS),
-                var.axes=FALSE,labels.size=3,ellipse=TRUE)
- # if (length(unique(metadata$name))>2){
-#    g <- g+scale_color_brewer(palette="Paired")
-#  }
-  g<- g+ theme(text = element_text(size=14))
-  png(filename='PCA.png',width=4000,height=2000,res=300)
-  print(g)
-  dev.off()
-}
-
-if(DE=="Yes"){
-  if (length(compsfile)==0) {
-    print("Comparing everything versus everything (comps.xlsx file not provided)")
-    #make list of all pairwise comparisons
-    mysamples = unique(metadata$name)
-    comps = data.frame()
-     currentrow = 1
-     for (i in 1:(length(mysamples)-1)){
-       for (j in (i+1):length(mysamples)){
-         comps[currentrow,1] <- mysamples[i]
-         comps[currentrow,2] <- mysamples[j]
-#         comps[j,1] = paste0(mysamples[i],"_vs_",mysamples[j])
-         currentrow = currentrow+1
-       }
-     }
+    
+    message("Finished! Please close TMT-NEAT window")
   } else {
-    print("Comparing sample pairs depicted in 'comps.xlsx' file")
-    #read in list of comparisons
-    comps <- read.xlsx(compsfile)
-  }
-
-  #perform PoissonSeq
-  message("Differential expression analysis...")
-  pseqdata <- finalimpintensitiesIRS
-  newwb <- createWorkbook()
-  newwb2 <- createWorkbook()
-  for (i in 1:dim(comps)[1]){
-    #get the intensities for this comparison
-    pseqdata |>
-      select(matches(comps[i,1]),matches(comps[i,2])) |>
-      na.omit() -> pdata
-
-    #make indicator variable y
-    y <- c(rep(1,ncol(pdata|>select(matches(comps[i,1])))),
-             rep(2,ncol(pdata|>select(matches(comps[i,2])))))
     
-    #perform PSeq
-    pseq<-PS.Main(dat=list(n=pdata,y=y,type="twoclass",pair=FALSE,gname=row.names(pdata)),para=list(ct.sum=0,ct.mean=0))
+    #make the peptide ids the row names
+    data <- read_excel(path = datafile,col_names = TRUE,sheet = 1)
     
-    # Let's create results table. Here, fold-change is calculated from previously normalized intensities.
-    if (annot == "None") {
-      pseq |>
-        select(2,4,5) |>
-        rename(UID = gname) |>
-        inner_join(nozeros |>
-                     select(Proteins:original.id) |>
-                     rownames_to_column(var="UID"), by = "UID") |>
-        inner_join(pdata |>
-                     mutate(UID = rownames(pdata)), by = "UID") %>%
-        mutate(log2FC = log2(rowMeans(across(starts_with(comps[i,2])))/rowMeans(across(starts_with(comps[i,1])))),
-               GeneID = gsub(pattern = ";(.+)", replacement = "", x = .[]$Proteins, perl = T), .after = UID) -> myresults
+    colnames(data)[1] <- "Proteins"
+    
+    #read in the metadata
+    metadataorg <- read.table(metadatafile,sep="\t",header=TRUE,stringsAsFactors=FALSE)
+    
+    #set run basics
+    metadata <- metadataorg[!grepl('blank',metadataorg$name,ignore.case=TRUE),] #metadata without unused chanels
+    plex <- length(metadata$sample[metadata$run==1]) #number of TMT channels used
+    runs <- max(metadata$run) #number of LC-MS/MS runs for this experiment
+    reps <- metadata$rep #number of replicates per condition
+    numrefs <- sum(grepl("Ref",metadata$name,ignore.case=TRUE))/runs #number of references per run
+    
+    message("Beginning data processing...")
+    if (PTM == "P"){
+      #get rid of peptides with no phospho sites
+      data <- data %>% filter(!is.na(Number.of.Phospho..STY.))
+      data <- data %>% filter(Number.of.Phospho..STY.!="")
+      #get the raw intensities for differential abundance
+      intensities = data[,grepl('Reporter.intensity',colnames(data))]
+      rawintensities = intensities[!grepl('corrected',colnames(intensities))]
+      rawintensities = rawintensities[!grepl('count',colnames(rawintensities))]
       
-    } else if (annot == "Arabidopsis thaliana - TAIR") {
+      if(exp=="None"){
+        intensitiesK=rawintensities
+      }else{
+        intensitiesK = rawintensities[,grepl(exp,colnames(rawintensities))] 
+      }
+      #remove blanks
+      metadata3 = rep(metadataorg$name,each=3)
+      intensitiesK = intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
       
-      pseq |>
-        select(2,4,5) |>
-        rename(UID = gname) |>
-        inner_join(nozeros |>
-                     select(Proteins:original.id) |>
-                     rownames_to_column(var="UID"), by = "UID") |>
-        inner_join(pdata |>
-                     mutate(UID = rownames(pdata)), by = "UID") %>%
-        mutate(log2FC = log2(rowMeans(across(starts_with(comps[i,2])))/rowMeans(across(starts_with(comps[i,1])))),
-               GeneID = substr(.[]$Proteins,start = 1, stop = 9), .after = UID) |>
-        left_join(y = read.delim(file = paste0(TMT_NEAT_DIR,"/gene_annotations/ath.csv"),header = TRUE,sep = ",",stringsAsFactors = FALSE),
-                  by = c("GeneID" = "AGI")) %>%
-        select(1,2,3,26,27, 4:25) -> myresults
+      
+      message("Separating multiplicities...")
+      #first we need to make a new table where we 1) take only the columns we need and 2) separate peptides by multiplicity
+      #this assumes columns are always named the same thing
+      currentrow=1
+      for (i in 1:length(row.names(data))){
+        myprotein = data[i,]
+        #check number of phospho sites
+        #if there is a semicolon, that means we have multiple sites and need to split into multiple rows
+        if (length(grep(";",myprotein$Number.of.Phospho..STY.))>0){
+          #get the info for this protein
+          mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                              myprotein$Localization.prob,myprotein$Number.of.Phospho..STY.,
+                              myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                              myprotein$Phospho..STY..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                             "Localization.prob",
+                             "Phospho.Site","Sequence.window",'Modification.window',
+                             'Peptide.window.coverage','Phospho.site.probs','original.id')
+          #split the phospho sites by semincolon
+          sites = strsplit(myprotein$Number.of.Phospho..STY.,";")
+          mysites = sites[[1]]
+          for (j in 1:length(mysites)){
+            #if the site # is >3, we need to make it 3
+            if (mysites[j]>3){
+              currentsite = 3
+            } else{
+              currentsite=mysites[j]
+            }
+            myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+            colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+            if (i==1){
+              newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            } else{
+              newdata[currentrow,] =  data.frame(mydata,myintensities)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            }
+          }
+        }else{
+          #get the info for this protein
+          mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                              myprotein$Localization.prob,myprotein$Number.of.Phospho..STY.,
+                              myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                              myprotein$Phospho..STY..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                             "Localization.prob",
+                             "Phospho.Site","Sequence.window",'Modification.window',
+                             'Peptide.window.coverage','Phospho.site.probs','original.id')
+          #get the correct intensity values for this protein
+          if (myprotein$Number.of.Phospho..STY.>3){
+            currentsite = 3
+          } else{
+            currentsite=myprotein$Number.of.Phospho..STY.
+          }
+          myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+          colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+          if (i==1){
+            newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.Phospho..STY.,sep="")
+            currentrow = currentrow+1
+          } else{
+            newdata[currentrow,] =  data.frame(mydata,myintensities)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.Phospho..STY.,sep="")
+            currentrow = currentrow+1
+          }
+        }
+      }
     }
-    
-    
-    #save
-    mycomp = paste0(comps[i,2],"_vs_",comps[i,1])
-    if (nchar(mycomp)>31){
-      mysheet = paste0(abbreviate(comps[i,2],minlength=13),"_vs_",abbreviate(comps[i,1],minlength=13))
+    else if(PTM=="U"){
+      #get rid of peptides with no ubiquitin sites
+      data <- data[!(data$Number.of.GlyGly..K.==""),]
+      #get the raw intensities for differential abundance
+      intensities <- data[,grepl('Reporter.intensity',colnames(data))]
+      rawintensities <- intensities[!grepl('corrected',colnames(intensities))]
+      rawintensities <- rawintensities[!grepl('count',colnames(rawintensities))]
+      
+      if(exp=="None"){
+        intensitiesK <- rawintensities
+      }else{
+        intensitiesK <- rawintensities[,grepl(exp,colnames(rawintensities))] 
+      }
+      #remove blanks
+      metadata3 <- rep(metadataorg$name,each=3)
+      intensitiesK <- intensitiesK[,!grepl('blank',metadata3,ignore.case=TRUE)]
+      
+      message("Separating multiplicities...")
+      #first we need to make a new table where we 1) take only the columns we need and 2) separate peptides by multiplicity
+      #this assumes columns are always named the same thing
+      currentrow <- 1
+      for (i in 1:length(row.names(data))){
+        myprotein <- data[i,]
+        #check number of Ubiquitin sites
+        #if there is a semicolon, that means we have multiple sites and need to split into multiple rows
+        if (length(grep(";",myprotein$Number.of.GlyGly..K.))>0){
+          #get the info for this protein
+          mydata = data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                              myprotein$Localization.prob,myprotein$Number.of.GlyGly..K.,
+                              myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                              myprotein$GlyGly..K..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata)=c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                             "Localization.prob",
+                             "GlyGly.Site","Sequence.window",'Modification.window',
+                             'Peptide.window.coverage','GlyGly.site.probs','original.id')
+          #split the Ubiquitin sites by semincolon
+          sites = strsplit(myprotein$Number.of.GlyGly..K.,";")
+          mysites = sites[[1]]
+          for (j in 1:length(mysites)){
+            #if the site # is >3, we need to make it 3
+            if (mysites[j]>3){
+              currentsite = 3
+            } else{
+              currentsite=mysites[j]
+            }
+            myintensities = intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+            colnames(myintensities)=paste(rep("R",length(reps)),reps,sep="_")
+            if (i==1){
+              newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            } else{
+              newdata[currentrow,] =  data.frame(mydata,myintensities)
+              row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",mysites[j],sep="")
+              currentrow = currentrow+1
+            }
+          }
+        }else{
+          #get the info for this protein
+          mydata <- data.frame(myprotein$Proteins,myprotein$Positions.within.proteins,myprotein$Protein,myprotein$Fasta.headers,
+                               myprotein$Localization.prob,myprotein$Number.of.GlyGly..K.,
+                               myprotein$Sequence.window, myprotein$Modification.window, myprotein$Peptide.window.coverage,
+                               myprotein$GlyGly..K..Probabilities, row.names(myprotein), stringsAsFactors=FALSE)
+          colnames(mydata) <- c("Proteins","Positions.within.proteins","Protein","Fasta.headers",
+                                "Localization.prob",
+                                "GlyGly.Site","Sequence.window",'Modification.window',
+                                'Peptide.window.coverage','GlyGly.site.probs','original.id')
+          #get the correct intensity values for this protein
+          if (myprotein$Number.of.GlyGly..K.>3){
+            currentsite <- 3
+          } else{
+            currentsite <- as.numeric(myprotein$Number.of.GlyGly..K.)
+          }
+          myintensities <- intensitiesK[i,grepl(paste('_',currentsite,sep=""),colnames(intensitiesK))]
+          colnames(myintensities) <- paste(rep("R",length(reps)),reps,sep="_")
+          if (i==1){
+            newdata = data.frame(mydata,myintensities,stringsAsFactors=FALSE)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.GlyGly..K.,sep="")
+            currentrow = currentrow+1
+          } else{
+            newdata[currentrow,] =  data.frame(mydata,myintensities)
+            row.names(newdata)[currentrow]=paste(row.names(newdata)[currentrow],".",myprotein$Number.of.GlyGly..K.,sep="")
+            currentrow = currentrow+1
+          }
+        }
+      }
     }else{
-      mysheet=paste0(comps[i,2],"_vs_",comps[i,1])
+      #get the raw intensities for differential abundance and remove unused channels
+
+      intensitiesK<- data |>
+        select(starts_with(paste0("Abundance: ", exp)), Proteins)
+      
+      if(nrow(metadata) < ncol(intensitiesK)-1){
+        intensitiesK <- intensitiesK |>
+          select(unlist(filter(metadataorg, name != "blank") |> select(1), use.names = F), Proteins)
+      }
+      
+      #get info for all proteins
+      mydata = data |>
+        select(-Contaminant, -starts_with("Abundance"), -Modifications)
+      newdata <- right_join(mydata,intensitiesK, by = "Proteins")
     }
-    addWorksheet(wb = newwb2, sheetName = mysheet, gridLines = TRUE)
-    writeDataTable(wb=newwb2, sheet=mysheet,x=myresults,tableStyle="none",
-                   rowNames=FALSE,withFilter=FALSE,
-                   bandedRows=FALSE,bandedCols=FALSE)
     
-    #table formatting for MA and volcano plots
-    myresults %>%
-      mutate(mean_mock = rowMeans(select(myresults,starts_with(comps[i,1]))),
-             mean_treatment = rowMeans(select(myresults, starts_with(comps[i,2])))) -> myData
+    #replace column names with sample names from the metadata
+    colnames(newdata)[(dim(mydata)[2]+1):dim(newdata)[2]] <- paste0(metadata$name,"_",metadata$rep)
     
-    # Let's now make pretty plots!
-    if (stat=="q"){ # if we are using qvalue as cutoff stat
-      
-      myData$DE <- "NS"
-      myData$DE[myData$fdr<=qval & myData$log2FC < 0] <- "Down"
-      myData$DE[myData$fdr<=qval & myData$log2FC > 0] <- "Up"
-      myData$DE <- factor(myData$DE, levels = c("Up", "Down", "NS"))
-      
-      #make MA plot
-      MA <- ggplot(myData,
-                   aes(x = log2(mean_mock*mean_treatment)*0.5,
-                       y = log2FC))+
-        geom_point(color=alpha('black', 0.3), shape=21, size=2, aes(fill=factor(DE))) +
-        scale_fill_manual(values=alpha(c('#FD6467','#56B4E9','#FDFD96'),0.8)) +
-        geom_hline(yintercept = 0, linetype = "dashed", color = alpha("black", 0.7), linewidth = 1)+
-        ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$fdr<qval)," DE elements)"))+
-        xlab(label = bquote("A (Average"~log[2]~"Intensity)"))+
-        ylab(label = bquote("M ("*log[2]~"Fold-change)"))+
-        labs(fill = element_blank())+
-        theme_classic()+
-        theme(axis.title.x = element_text(size =20),
-              axis.title.y = element_text(size =20),
-              legend.text = element_text(size=15),
-              axis.text.x= element_text(size=15),
-              axis.text.y= element_text(size=15))
-      
-      # Make volcano plot
-      volcanoPlot <- ggplot(myData, aes(x = log2FC, y = -log10(fdr)))+
-        geom_point(color='black', shape=21, size=2, alpha=0.7, aes(fill=factor(DE))) +
-        geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1, alpha = 0.7)+
-        scale_fill_manual(values=c('#FD6467','#56B4E9','#FDFD96' ))+
-        ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$fdr<qval)," DE elements)"))+
-        xlab(label = bquote(log[2]~"Fold-change"))+
-        ylab(label = bquote(-log[10]~"qvalue"))+
-        labs(fill = element_blank())+
-        ylim(0,3)+
-        xlim(-3,3)+
-        theme_classic()+
-        theme(legend.position = "top")
-      
-      #export plots as PNG images
-      png(filename = paste0(comps[i,2],"_vs_",comps[i,1],"_MA_plot_",qval,".png"), width = 2500, height = 1500, res = 300)
-      plot(MA)
-      dev.off()
-      
-      png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_volcano_plot_",qval,".png"),width=2500,height=2000,res=300)
-      print(volcanoPlot)
-      dev.off()
-      
-    } else { # else use pvalue as cutoff stat
-      
-      myData$DE <- "NS"
-      myData$DE[myData$pval<=qval & myData$log2FC < 0] <- "Down"
-      myData$DE[myData$pval<=qval & myData$log2FC > 0] <- "Up"
-      myData$DE <- factor(myData$DE, levels = c("Up", "Down", "NS"))
-      
-      #make MA plot
-      MA <- ggplot(myData,
-                   aes(x = log2(mean_mock*mean_treatment)*0.5,
-                       y = log2FC))+
-        geom_point(color=alpha('black', 0.3), shape=21, size=2, aes(fill=factor(DE))) +
-        scale_fill_manual(values=alpha(c('#FD6467','#56B4E9','#FDFD96'),0.8)) +
-        geom_hline(yintercept = 0, linetype = "dashed", color = alpha("black", 0.7), linewidth = 1)+
-        ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$pval<qval)," DE elements)"))+
-        xlab(label = bquote("A (Average"~log[2]~"Intensity)"))+
-        ylab(label = bquote("M ("*log[2]~"Fold-change)"))+
-        labs(fill = element_blank())+
-        theme_classic()+
-        theme(axis.title.x = element_text(size =20),
-              axis.title.y = element_text(size =20),
-              legend.text = element_text(size=15),
-              axis.text.x= element_text(size=15),
-              axis.text.y= element_text(size=15))
-      
-      #make volcano plot
-      volcanoPlot <- ggplot(myData, aes(x = log2FC, y = -log10(pval)))+
-        geom_point(color='black', shape=21, size=2, alpha=0.7, aes(fill=factor(DE))) +
-        geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1, alpha = 0.7)+
-        scale_fill_manual(values=c('#FD6467','#56B4E9','#FDFD96' ))+
-        ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$pval<qval)," DE elements)"))+
-        xlab(label = bquote(log[2]~"Fold-change"))+
-        ylab(label = bquote(-log[10]~"pvalue"))+
-        labs(fill = element_blank())+
-        ylim(0,3)+
-        xlim(-3,3)+
-        theme_classic()+
-        theme(legend.position = "top")
-      
-      #Export both plots as PNG images
-      png(filename = paste0(comps[i,2],"_vs_",comps[i,1],"_MA_plot_",qval,".png"), width = 2500, height = 1500, res = 300)
-      plot(MA)
-      dev.off()
-      
-      png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_volcano_plot_",qval,".png"),width=2500,height=2000,res=300)
-      plot(volcanoPlot)
-      dev.off()
+    #save table
+    newdata |>
+      write.csv(file = 'prenormalized_data.csv', row.names = FALSE)
+    
+    message("Removing proteins in less than 50% of the runs...")
+    
+    #we need to get rid of proteins that are not expressed in at least half of the runs
+    #to do this we can just pull the reference lanes from all the runs and weed out those with 50% missing (0) intensity value
+    #if there are no references, we need to impute them using the protein mean intensity
+    
+    if (numrefs==0){
+      refs <- intensitiesK |>
+        `colnames<-`(c(paste0(metadata$name,"_",metadata$rep), "Proteins")) |>
+        column_to_rownames(var = "Proteins") |>
+        rowMeans()
+    } else {
+      refs = newdata[,grepl('Ref',colnames(newdata),ignore.case=TRUE)]
     }
-
-    #make pvalue and qvalue histogram
-
-      png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_qval_hist.png"),width=2000,height=2000,res=300)
-      h <- hist(x=pseq$fdr,breaks=100)
-      plot(h,main="q-value distribution histogram", xlab="q-value")
-      dev.off()
-
-      png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_pval_hist.png"),width=2000,height=2000,res=300)
-      h <- hist(x=pseq$pval,breaks=100)
-      plot(h,main="p-value distribution histogram",xlab="p-value")
-      dev.off()
-
-    #get differentially expressed genes and save
-    if (stat=="q"){
-      myresults %>%
-        filter(fdr<qval, .preserve = TRUE) -> mypros
-    }else{
-      myresults %>%
-        filter(pval<qval, .preserve = TRUE) -> mypros
+    
+    if (numrefs>1) {
+      for (i in 1:runs) {
+        if (i==1) {
+          refsums = data.frame(rowSums(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+        } else {
+          refsums = data.frame(refsums,rowSums(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+        }
+      }
+      #count how many times the protein is zero in the reference lane
+      zerosums = rowSums(refsums[,]==0)
+      #remove the proteins that are zero in >=50-1% of the runs
+      nozeros = newdata[zerosums <= (floor(dim(refsums)[2]/2-1)),]
+    } else if (numrefs==1) {
+      #remove the proteins that are zero in all samples
+      nozeros <- newdata[rowSums(refs==0)==0,]
+    } else {
+      nozeros <- newdata[!is.na(refs)&refs!=0,]
     }
-
     #save
-    addWorksheet(wb = newwb, sheetName = mysheet, gridLines = TRUE)
-    writeDataTable(wb=newwb, sheet=mysheet,x=mypros,tableStyle="none",
-                   rowNames=FALSE,withFilter=FALSE,
-                   bandedRows=FALSE,bandedCols=FALSE)
+    nozeros %>%
+      write.csv(file = 'prenormalized_data_in_at_least_half_of_runs.csv', row.names = FALSE)
+    finalintensities <- nozeros |>
+      column_to_rownames(var = "Proteins") |>
+      select((dim(mydata)[2]+1):dim(newdata)[2]-1)
+    #finalintensities <- intensities
+    
+    #plot boxplot before normalization
+    #QC plots
+    if (runs==1){
+      colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+      png(filename='boxplot_log2_prenorm.png',width=5000,height=2000,res=300)
+      invisible(b <- boxplot(log2(finalintensities+1),col=colors[unlist(lapply(1:length(unique(metadata$name)),function(x) rep(x,length(unique(reps)))))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+      print(b)
+      dev.off()
+    } else {
+      colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+      png(filename='boxplot_log2.png',width=5000,height=2000,res=300)
+      invisible(b <- boxplot(log2(finalintensities+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+      print(b)
+      dev.off()
+    }
+    
+    if(SLN=="Yes"){
+      message("Sample loading normalization...")
+      #peform sample loading normalization (SLN)
+      if (runs>1){
+        for (i in 1:runs){
+          #get intensity values for this run
+          myints = finalintensities[,(1+(i-1)*plex):(i*plex)]
+          #column normalize
+          sums = colSums(myints)
+          meansums = mean(sums)
+          normfactor = sums/meansums
+          myintensitiesnorm = myints
+          for (j in 1:dim(myints)[2]){
+            myintensitiesnorm[,j] = ceiling(myints[,j]/normfactor[j])
+          }
+          #make a table of normalized intensities
+          if (i==1){
+            normintensities = myintensitiesnorm
+          }else{
+            normintensities = data.frame(normintensities,myintensitiesnorm)
+          }
+        }
+        write.csv(normintensities,"sample_loading_normalization.csv")
+      } else {
+#        myints <- finalintensities
+        #column normalize
+        sums <- colSums(finalintensities, na.rm = TRUE)
+        meansums <- mean(sums)
+        normfactor <- sums/meansums
+        myintensitiesnorm <- finalintensities
+        for (j in 1:dim(finalintensities)[2]){
+          myintensitiesnorm[,j] <-  ceiling(finalintensities[,j]/normfactor[j])
+        }
+ #       normintensities <- myintensitiesnorm
+        myintensitiesnorm %>%
+          rownames_to_column(var = "Proteins") %>%
+          write.csv(file = "sample_loading_normalization.csv", row.names = FALSE)
+      }
+    } else {
+      myintensitiesnorm <- finalintensities
+#      normintensities <- finalintensities
+    }
+    
+    finalintensities <- myintensitiesnorm
+    
+    #perform IRS
+    if (runs>1){
+      message("Internal reference normalization...")
+      refs = as.matrix(normintensitiesimpall[,grepl('Ref',colnames(normintensitiesimpall),ignore.case=TRUE)])
+      if (numrefs>1){
+        for (i in 1:runs){
+          if (i==1){
+            refscomb = data.frame(rowMeans(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+          }else{
+            refscomb = data.frame(refscomb,rowMeans(refs[,(numrefs*(i-1)+1):(numrefs*i)]))
+          }
+        }
+      }else{
+        refscomb=refs
+      }
+      refslog = log(refscomb+1)
+      zerosums = rowSums(refscomb[,]==0)
+      irsaverage <- rowSums(refslog)/(dim(refscomb)[2]-zerosums)
+      irsaverage = exp(irsaverage)
+      normfactorref = irsaverage/refscomb
+      for (i in 1:dim(normfactorref)[2]){
+        normfactorref[normfactorref[,i]=="Inf",i]=NA
+      }
+      for (i in 1:dim(refscomb)[2]){
+        #get intensity values for this run
+        myintensities = normintensitiesimpall[,colnames(normintensitiesimpall)%in%paste(metadata$name[metadata$run==i],"_",metadata$rep[metadata$run==i],sep="")]
+        mynormfactorref = normfactorref[,i]
+        #row normalize each protein against the reference
+        for (j in 1:dim(myintensities)[2]){
+          myintensities[,j] = ceiling(myintensities[,j]*mynormfactorref)
+        }
+        #make a table of normalized intensities
+        if (i==1){
+          normintensitiesIRS = myintensities
+        }else{
+          normintensitiesIRS = data.frame(normintensitiesIRS,myintensities)
+        }
+      }
+      write.csv(normintensitiesIRS,'IRS_normalized_values.csv')
+      finalimpintensitiesIRS=normintensitiesIRS
+      
+      metadata %>%
+        filter(!grepl(pattern = "Ref", x = .[]$name), .preserve = TRUE) -> metadata
+    }else{
+      finalimpintensitiesIRS <- finalintensities
+    }
+    
+    #QC plots
+    # Normalized intensity box plot
+    if (SLN == "Yes") {
+      if (runs == 1) {
+        colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+        png(filename='boxplot_log2_norm.png',width=5000,height=2000,res=300)
+        invisible(b <- boxplot(log2(finalimpintensitiesIRS+1),col=colors[unlist(lapply(1:length(unique(metadata$name)),function(x) rep(x,length(unique(reps)))))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+        print(b)
+        dev.off()
+      } else {
+        colors = c("blue","green","orange","yellow","red","purple","white","blue","green","orange","yellow","red","purple","white")
+        png(filename='boxplot_log2_norm.png',width=5000,height=2000,res=300)
+        invisible(b <- boxplot(log2(finalimpintensitiesIRS+1),col=colors[unlist(lapply(1:runs,function(x) rep(x,plex)))],ylab="log2(Intensity)",cex.axis=0.75,las=2))
+        print(b)
+        dev.off()
+      }
+
+    }
+    
+    #pca
+    if (numrefs>0){
+      pcaresults = prcomp(t(na.omit(finalimpintensitiesIRS[,!grepl("Ref",colnames(finalimpintensitiesIRS),ignore.case=TRUE)])))
+      #plot PCA
+      g <- ggbiplot(pcaresults, groups = metadata$name[!grepl("Ref",metadata$name,ignore.case=TRUE)],
+                    labels=colnames(finalimpintensitiesIRS)[grep("Ref",colnames(finalimpintensitiesIRS),invert=TRUE,ignore.case=TRUE)],
+                    var.axes=FALSE,labels.size=3,ellipse=TRUE)
+      if (length(unique(metadata$name))>2){
+        g <- g+scale_color_brewer(palette="Set1")
+      }
+      g<- g+ theme(text = element_text(size=14))
+      png(filename='PCA.png',width=5000,height=2000,res=300)
+      print(g)
+      dev.off()
+    }else{
+      pcaresults = prcomp(t(na.omit(finalimpintensitiesIRS)))
+      #plot PCA
+      g <- ggbiplot(pcaresults, groups = metadata$name,
+                    labels=colnames(finalimpintensitiesIRS),
+                    var.axes=FALSE,labels.size=3,ellipse=TRUE)
+      # if (length(unique(metadata$name))>2){
+      #    g <- g+scale_color_brewer(palette="Paired")
+      #  }
+      g<- g+ theme(text = element_text(size=14))
+      png(filename='PCA.png',width=4000,height=2000,res=300)
+      print(g)
+      dev.off()
+    }
+    
+    if(DE=="Yes"){
+      if (length(compsfile)==0) {
+        print("Comparing everything versus everything (comps.xlsx file not provided)")
+        #make list of all pairwise comparisons
+        mysamples = unique(metadata$name)
+        comps = data.frame()
+        currentrow = 1
+        for (i in 1:(length(mysamples)-1)){
+          for (j in (i+1):length(mysamples)){
+            comps[currentrow,1] <- mysamples[i]
+            comps[currentrow,2] <- mysamples[j]
+            #         comps[j,1] = paste0(mysamples[i],"_vs_",mysamples[j])
+            currentrow = currentrow+1
+          }
+        }
+      } else {
+        print("Comparing sample pairs depicted in 'comps.xlsx' file")
+        #read in list of comparisons
+        comps <- read.xlsx(compsfile)
+      }
+      
+      #perform Differential expression
+      message("Differential expression analysis...")
+      pseqdata <- finalimpintensitiesIRS
+      newwb <- createWorkbook()
+      newwb2 <- createWorkbook()
+      for (i in 1:dim(comps)[1]){
+        #get the intensities for this comparison
+        pseqdata |>
+          select(matches(comps[i,1]),matches(comps[i,2])) |>
+          na.omit() -> pdata
+        
+        # #Perform two-sample t-test
+        # library(rstatix)
+        # pdata <- pdata %>%
+        #   rownames_to_column(var = "UID") %>%
+        #   pivot_longer()
+        #   stat_ttest <- mySCres_long %>%
+        #   group_by(AGI) %>%
+        #   t_test(log2int ~ cell_type,var.equal = FALSE) %>%
+        #   adjust_pvalue(method = "BH") %>%
+        #   add_significance(cutpoints = c(0,0.05,0.1,1), symbols = c("**","*","ns")) %>%
+        #   inner_join(mySCres_wide, by = "AGI") %>%
+        #   rename(Protein = AGI) %>%
+        #   mutate(AGI = str_sub(Protein,start = 1, end = 9),
+        #          cortex_AVG = rowMeans(across(starts_with("cortex"))),
+        #          endo_AVG = rowMeans(across(starts_with("endo"))),
+        #          log2FC = c(cortex_AVG-endo_AVG)) %>%
+        #   left_join(AthGeneSymbols%>%select(AGI,symbol,FASTA.header), by = "AGI") %>%
+        #   select(1,AGI,symbol,FASTA.header,3:6,9:11,log2FC,matches("AVG"))
+        # write.table(x = stat_ttest,
+        #             file = paste0("SCP",
+        #                           j,
+        #                           "_MeanSCRbelow0.42_rem0.98missing_results_ttest_BH_welch.tsv"),
+        #             row.names = FALSE,
+        #             sep = "\t",
+        #             quote = FALSE)
+        
+        #Perform PoissonSeq statistical analysis
+        #make indicator variable y
+        y <- c(rep(1,ncol(pdata|>select(matches(comps[i,1])))),
+               rep(2,ncol(pdata|>select(matches(comps[i,2])))))
+        
+        #perform PSeq
+        pseq<-PS.Main(dat=list(n=pdata,y=y,type="twoclass",pair=FALSE,gname=row.names(pdata)),para=list(ct.sum=0,ct.mean=0))
+        
+        # Let's create results table. Here, fold-change is calculated from previously normalized intensities.
+        if (annot == "None") {
+          pseq |>
+            select(2,4,5) |>
+            rename(Proteins = gname) |>
+            inner_join(mydata, by = "Proteins") |>
+            inner_join(pdata |> 
+                         rownames_to_column(var = "Proteins"), by = "Proteins") %>%
+            mutate(log2FC = log2(rowMeans(across(starts_with(comps[i,2])))/rowMeans(across(starts_with(comps[i,1])))),
+                   GeneID = gsub(pattern = ";(.+)", replacement = "", x = .[]$Proteins, perl = T), .after = Proteins) -> myresults
+          
+        } else if (annot == "Arabidopsis thaliana - TAIR") {
+          
+          pseq |>
+            select(2,4,5) |>
+            rename(UID = gname) |>
+            inner_join(nozeros |>
+                         select(Proteins:original.id) |>
+                         rownames_to_column(var="UID"), by = "UID") |>
+            inner_join(pdata |>
+                         mutate(UID = rownames(pdata)), by = "UID") %>%
+            mutate(log2FC = log2(rowMeans(across(starts_with(comps[i,2])))/rowMeans(across(starts_with(comps[i,1])))),
+                   GeneID = substr(.[]$Proteins,start = 1, stop = 9), .after = UID) |>
+            left_join(y = read.delim(file = paste0(TMT_NEAT_DIR,"/gene_annotations/ath.csv"),header = TRUE,sep = ",",stringsAsFactors = FALSE),
+                      by = c("GeneID" = "AGI")) %>%
+            select(1,2,3,26,27, 4:25) -> myresults
+        }
+        
+        
+        #save
+        mycomp = paste0(comps[i,2],"_vs_",comps[i,1])
+        if (nchar(mycomp)>31){
+          mysheet = paste0(abbreviate(comps[i,2],minlength=13),"_vs_",abbreviate(comps[i,1],minlength=13))
+        }else{
+          mysheet=paste0(comps[i,2],"_vs_",comps[i,1])
+        }
+        addWorksheet(wb = newwb2, sheetName = mysheet, gridLines = TRUE)
+        writeDataTable(wb=newwb2, sheet=mysheet,x=myresults,tableStyle="none",
+                       rowNames=FALSE,withFilter=FALSE,
+                       bandedRows=FALSE,bandedCols=FALSE)
+        
+        #table formatting for MA and volcano plots
+        myresults %>%
+          mutate(mean_mock = rowMeans(select(myresults,starts_with(comps[i,1]))),
+                 mean_treatment = rowMeans(select(myresults, starts_with(comps[i,2])))) -> myData
+        
+        # Let's now make pretty plots!
+        if (stat=="q"){ # if we are using qvalue as cutoff stat
+          
+          myData$DE <- "NS"
+          myData$DE[signif(myData$fdr,1)<=qval & myData$log2FC < 0] <- "Down"
+          myData$DE[signif(myData$fdr,1)<=qval & myData$log2FC > 0] <- "Up"
+          myData$DE <- factor(myData$DE, levels = c("Up", "Down", "NS"))
+          
+          #make MA plot
+          MA <- ggplot(myData,
+                       aes(x = log2(mean_mock*mean_treatment)*0.5,
+                           y = log2FC))+
+            geom_point(color=alpha('black', 0.3), shape=21, size=2, aes(fill=factor(DE))) +
+            scale_fill_manual(values=alpha(c('#FD6467','#56B4E9','#FDFD96'),0.8)) +
+            geom_hline(yintercept = 0, linetype = "dashed", color = alpha("black", 0.7), linewidth = 1)+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(signif(pseq$fdr,1)<qval)," DE elements)"))+
+            xlab(label = bquote("A (Average"~log[2]~"Intensity)"))+
+            ylab(label = bquote("M ("*log[2]~"Fold-change)"))+
+            labs(fill = element_blank())+
+            theme_classic()+
+            theme(axis.title.x = element_text(size =20),
+                  axis.title.y = element_text(size =20),
+                  legend.text = element_text(size=15),
+                  axis.text.x= element_text(size=15),
+                  axis.text.y= element_text(size=15))
+          
+          # Make volcano plot
+          volcanoPlot <- ggplot(myData, aes(x = log2FC, y = -log10(fdr)))+
+            geom_point(color='black', shape=21, size=2, alpha=0.7, aes(fill=factor(DE))) +
+            geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1, alpha = 0.7)+
+            scale_fill_manual(values=c('#FD6467','#56B4E9','#FDFD96' ))+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(signif(pseq$fdr,1)<qval)," DE elements)"))+
+            xlab(label = bquote(log[2]~"Fold-change"))+
+            ylab(label = bquote(-log[10]~"qvalue"))+
+            labs(fill = element_blank())+
+            ylim(0,3)+
+            xlim(-3,3)+
+            theme_classic()+
+            theme(legend.position = "top")
+          
+          #export plots as PNG images
+          png(filename = paste0(comps[i,2],"_vs_",comps[i,1],"_MA_plot_",stat,qval,".png"), width = 2500, height = 1500, res = 300)
+          plot(MA)
+          dev.off()
+          
+          png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_volcano_plot_",stat,qval,".png"),width=2500,height=2000,res=300)
+          print(volcanoPlot)
+          dev.off()
+          
+        } else { # else use pvalue as cutoff stat
+          
+          myData$DE <- "NS"
+          myData$DE[myData$pval<=qval & myData$log2FC < 0] <- "Down"
+          myData$DE[myData$pval<=qval & myData$log2FC > 0] <- "Up"
+          myData$DE <- factor(myData$DE, levels = c("Up", "Down", "NS"))
+          
+          #make MA plot
+          MA <- ggplot(myData,
+                       aes(x = log2(mean_mock*mean_treatment)*0.5,
+                           y = log2FC))+
+            geom_point(color=alpha('black', 0.3), shape=21, size=2, aes(fill=factor(DE))) +
+            scale_fill_manual(values=alpha(c('#FD6467','#56B4E9','#FDFD96'),0.8)) +
+            geom_hline(yintercept = 0, linetype = "dashed", color = alpha("black", 0.7), linewidth = 1)+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$pval<qval)," DE elements)"))+
+            xlab(label = bquote("A (Average"~log[2]~"Intensity)"))+
+            ylab(label = bquote("M ("*log[2]~"Fold-change)"))+
+            labs(fill = element_blank())+
+            theme_classic()+
+            theme(axis.title.x = element_text(size =20),
+                  axis.title.y = element_text(size =20),
+                  legend.text = element_text(size=15),
+                  axis.text.x= element_text(size=15),
+                  axis.text.y= element_text(size=15))
+          
+          #make volcano plot
+          volcanoPlot <- ggplot(myData, aes(x = log2FC, y = -log10(pval)))+
+            geom_point(color='black', shape=21, size=2, alpha=0.7, aes(fill=factor(DE))) +
+            geom_vline(xintercept = 0, linetype = "dashed", color = "black", linewidth = 1, alpha = 0.7)+
+            scale_fill_manual(values=c('#FD6467','#56B4E9','#FDFD96' ))+
+            ggtitle(paste0(comps[i,2],"/",comps[i,1]," (",sum(pseq$pval<qval)," DE elements)"))+
+            xlab(label = bquote(log[2]~"Fold-change"))+
+            ylab(label = bquote(-log[10]~"pvalue"))+
+            labs(fill = element_blank())+
+            ylim(0,3)+
+            xlim(-3,3)+
+            theme_classic()+
+            theme(legend.position = "top")
+          
+          #Export both plots as PNG images
+          png(filename = paste0(comps[i,2],"_vs_",comps[i,1],"_MA_plot_",stat,qval,".png"), width = 2500, height = 1500, res = 300)
+          plot(MA)
+          dev.off()
+          
+          png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_volcano_plot_",stat,qval,".png"),width=2500,height=2000,res=300)
+          plot(volcanoPlot)
+          dev.off()
+        }
+        
+        #make pvalue and qvalue histogram
+        
+        png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_qval_hist.png"),width=2000,height=2000,res=300)
+        h <- hist(x=pseq$fdr,breaks=100)
+        plot(h,main="q-value distribution histogram", xlab="q-value")
+        dev.off()
+        
+        png(filename=paste0(comps[i,2],"_vs_",comps[i,1],"_pval_hist.png"),width=2000,height=2000,res=300)
+        h <- hist(x=pseq$pval,breaks=100)
+        plot(h,main="p-value distribution histogram",xlab="p-value")
+        dev.off()
+        
+        #get differentially expressed genes and save
+        if (stat=="q"){
+          myresults %>%
+            filter(signif(fdr,1)<qval, .preserve = TRUE) -> mypros
+        }else{
+          myresults %>%
+            filter(signif(pval,1)<qval, .preserve = TRUE) -> mypros
+        }
+        
+        #save
+        addWorksheet(wb = newwb, sheetName = mysheet, gridLines = TRUE)
+        writeDataTable(wb=newwb, sheet=mysheet,x=mypros,tableStyle="none",
+                       rowNames=FALSE,withFilter=FALSE,
+                       bandedRows=FALSE,bandedCols=FALSE)
+      }
+      
+      #write workbook
+      if (stat=="q"){
+        saveWorkbook(newwb, paste("Pseq_all_comps_q",qval,".xlsx",sep=""),overwrite=TRUE)
+      }else{
+        saveWorkbook(newwb, paste("Pseq_all_comps_p",qval,".xlsx",sep=""),overwrite=TRUE)
+      }
+      saveWorkbook(newwb2, "Pseq_all_comps.xlsx",overwrite=TRUE)
+    }else{
+      #save expression values with annotation information
+      finalimpintensitiesIRS = finalimpintensitiesIRS[order(row.names(finalimpintensitiesIRS)),]
+      nozeros = nozeros[order(row.names(nozeros)),]
+      myresults = data.frame(nozeros[row.names(nozeros)%in%row.names(finalimpintensitiesIRS),1:dim(mydata)[2]],finalimpintensitiesIRS)
+      write.csv(myresults,'Normalized_values.csv')
+    }
+    
+    message("Finished! Please close TMT-NEAT window")
   }
+}
   
-  #write workbook
-  if (stat=="q"){
-    saveWorkbook(newwb, paste("Pseq_all_comps_q",qval,".xlsx",sep=""),overwrite=TRUE)
-  }else{
-    saveWorkbook(newwb, paste("Pseq_all_comps_p",qval,".xlsx",sep=""),overwrite=TRUE)
-  }
-  saveWorkbook(newwb2, "Pseq_all_comps.xlsx",overwrite=TRUE)
-}else{
-  #save expression values with annotation information
-  finalimpintensitiesIRS = finalimpintensitiesIRS[order(row.names(finalimpintensitiesIRS)),]
-  nozeros = nozeros[order(row.names(nozeros)),]
-  myresults = data.frame(nozeros[row.names(nozeros)%in%row.names(finalimpintensitiesIRS),1:dim(mydata)[2]],finalimpintensitiesIRS)
-  write.csv(myresults,'Normalized_values.csv')
-}
-
-message("Finished! Please close TMT-NEAT window")
-}

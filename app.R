@@ -9,10 +9,11 @@ ui <- fluidPage(
                sidebarPanel(h3("Files"),
                             # Copy the line below to make a file upload manager
                             directoryInput(inputId = "directory", label = "Choose output directory"),
-                            fileInput("file2", label = "MaxQuant output file"),
+                            fileInput("file2", label = "Search engine results file"),
+                            radioButtons("radioSearch", label = "Spectra search software",choices = c("MaxQuant", "PD3.1")),
                             fileInput(inputId = "file", label = "Metadata file", accept = c(".tsv",".txt")),
                             fileInput("file3", label = "Comparisons file"),
-                            textInput("text2", label = "Experiment name", value = "None"),
+                            textInput("text2", label = "Experiment name / File number", value = "None"),
                             radioButtons("radioExp", label = "Use REGEXP on experiment name?", choices = c("Yes","No"),selected = "No"),
                             radioButtons("radio", label = "PTM?", choices = c("None","P","U")),
                             radioButtons("radio3", label = "Sample Loading Normalization?", choices = c("Yes","No")),
@@ -23,7 +24,7 @@ ui <- fluidPage(
                             actionButton ('screenshot', HTML ('Screenshot this window'))
                ),
                mainPanel(h3("Instructions"),
-                         p("TMT-NEAT processes MaxQuant output of TMT-labeled proteomics data."),
+                         p("TMT-NEAT processes MaxQuant/Proteome Discoverer output of TMT-labeled proteomics data."),
                          p("It performs within-run and between-run normalization, provides multiple quality control plots,
                 and statistically tests for differential expression."),
                 p('TMT-NEAT currently works with protein abundance as well as PTM data (currently phosphorylation
@@ -31,8 +32,8 @@ ui <- fluidPage(
                 h3("Input files"),
                 strong("Output directory"),
                 p("Select the folder where you want the results to be saved."),
-                strong("MaxQuant output file:"),
-                p("Output file from MaxQuant. Now TMT-NEAT allows direct input of the MQ output file (no conversion to csv necessary)."),
+                strong("Search engine output file:"),
+                p("Output file from MaxQuant or Proteome Discoverer."),
                 strong("Metadata file:"),
                 p("text (.txt) file that contains the following information in tab-delimited format:"),
                 p("Column 1 should be named \"sample\" and contain the lane # for each sample (1,2,3, etc)"),
@@ -46,9 +47,9 @@ ui <- fluidPage(
                 is provided in the metadata file. Provide an Excel file with control sample name in first column,
                 and second column will have the test sample name (i.e., treated or mutated sample name). Please see the TEST files for an example. 
                 You may leave this balnk if want to test all samples versus each other or if not performing differential expression.'),
-                strong("Experiment name"),
-                p("Input what you called your experiment when loading into MaxQuant. If you cannot remember,
-                you can check the summary file. This is useful if you only want to analyze specific samples in your
+                strong("Experiment name / PD file number"),
+                p("Input what you called your experiment when loading into MaxQuant or the File number for PD results (in the format F+number, i.e., F1, F2, F3).
+                If you cannot remember your MQ experiment name, you can check the summary file. This is useful if you only want to analyze specific samples in your
                 output file. If you leave this as is, it will automatically select all samples for analysis. You can
                 also choose to use a regular expression (REGEX) to match different experiment names at the same time"),
                 strong("Sample Loading Normalization"),
@@ -71,10 +72,10 @@ ui <- fluidPage(
                 strong("All output files are saved to your output directory."),br(),br(),
                 p("Various comma separated (.csv) files that contain your expression data before and after each step of
                 normalization. All differential expression analysis is performed on the values in the file \"IRS_Normalized_values.csv\""),
-                p("Various Quality Control (QC) plots including a boxplot colored by run, hierarchical clustering, and
+                p("Various Quality Control (QC) plots including a boxplot colored by run, and
                 Principal Component Analysis (PCA) plot that will show the differences between your samples. You should
                 see that your samples group by biological replicate after our normalization process."),
-                p("For each pairwise comparison we include a volcano plot and a q-value histogram. 
+                p("For each pairwise comparison we include a volcano and MA plots, and p-/q-value histogram. 
                 The volcano plot shows the q-value and fold change distribution for each pairwise comparison. The q-value histogram shows the
                 q-value distribution in more detail and is good for choosing a more suitable cutoff if the default cutoff
                 does not work for your samples."),
@@ -131,6 +132,7 @@ observeEvent(input$directory, ignoreNULL = TRUE,
         path <- choose.dir(caption = "Choose output directory") 
         TMT_pseq_pipeline(workdir=path,
                           datafile=input$file2$datapath,
+                          searcheng=input$radioSearch,
                           metadatafile=input$file$datapath,
                           exp=input$text2,
                           REGEX=input$radioExp,
@@ -144,6 +146,7 @@ observeEvent(input$directory, ignoreNULL = TRUE,
       } else {
         TMT_pseq_pipeline(workdir=path,
                           datafile=input$file2$datapath,
+                          searcheng=input$radioSearch,
                           metadatafile=input$file$datapath,
                           exp=input$text2,
                           REGEX=input$radioExp,

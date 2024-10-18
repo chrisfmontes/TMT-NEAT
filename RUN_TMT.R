@@ -1,6 +1,6 @@
 #run all code in this file to start the TMT analysis pipeline
 
-#check that all packages are installed, and load them using pacman
+#install pacman, if needed
 if (!require('pacman', character.only=T, quietly=T)) {
   install.packages('pacman')
   library('pacman', character.only=T)
@@ -8,20 +8,29 @@ if (!require('pacman', character.only=T, quietly=T)) {
   library('pacman',character.only=T)
 }
 
+#install Bioconductor if needed
+if (!require("BiocManager", quietly = TRUE)) {
+  install.packages("BiocManager")
+  BiocManager::install(update = TRUE, ask = FALSE)
+}
+
+#install impute (required for permutation FDR correction using samr)
+if (!require('impute', character.only=T, quietly=T)) {
+  BiocManager::install("impute", update = TRUE, ask = FALSE)
+}
+  
+#check that all packages are installed, and load them using pacman
 p_load(ggplot2)
 p_load(tibble)
 p_load(devtools)
 p_load(openxlsx)
-p_load(plyr)
+p_load(readxl)
 p_load(dplyr)
 p_load(shiny)
 p_load(shinyscreenshot)
-
-#install Bioconductor if needed
-if (!require("BiocManager", quietly = TRUE)) {
-      install.packages("BiocManager")
-BiocManager::install(update = TRUE, ask = FALSE)
-}
+p_load(rstatix)
+p_load(samr)
+p_load(tidyr)
 
 #install PoissonSeq from Github if needed
 if (!require('PoissonSeq',quietly=T)) {
